@@ -45,7 +45,10 @@ str_lit.markdown("""
             justify-content: space-between;
         }
     </style>
-""", unsafe_allow_value=True)
+""", unsafe_allow_html=True)
+
+TR_MAP = str.maketrans("çğıöşüîâûÇĞİÖŞÜÎÂÛ", "CGIOSUIAUCGIOSUIAU")
+
 
 # GÜVENLİK VE ŞİFRE EKRANI
 def sifre_kontrol():
@@ -65,10 +68,83 @@ def sifre_kontrol():
         return False
     return True
 
+
 def temizle_metin(metin):
-    m = str.maketrans("çğıöşüîâûÇĞİÖŞÜÎÂÛ", "CGIOSUUAUCGIOSUUAU")
-    t = str(metin).translate(m).upper().strip()
+    t = str(metin).translate(TR_MAP).upper().strip()
     return re.sub(r'[^A-Z0-9]', '', t)
+
+
+def hazirlik_mi(metin):
+    """Ders adı / dosya adı hazırlık sınıfına mı ait?"""
+    c = temizle_metin(metin)
+    return "HAZIRLIK" in c or "HZ" in c
+
+
+def hazirlik_sube_harfi(metin):
+    """
+    Hazırlık ders/dosya adından şube harfini (A, B, C...) çıkarır.
+    Örnekler: 'Hazırlık A', 'HZ-B', 'HZ_C', 'HazırlıkA', 'A Şubesi' -> 'A' / 'B' / 'C'
+    Harf bulunamazsa None döner.
+    Roma rakamlarıyla (I, II, V...) karışmaması için yalnızca A-F aranır.
+    """
+    t = str(metin).translate(TR_MAP).upper()
+    t = os.path.splitext(t)[0] if t.endswith((".XLSX", ".XLS", ".CSV")) else t
+
+    # 1) HZA / HAZIRLIKB gibi bitişik yazımlar
+    m = re.search(r'(?:HAZIRLIK|HZ)[\s\-_\.]*([A-F])(?![A-Z])', t)
+    if m:
+        return m.group(1)
+
+    # 2) '... A ŞUBESİ' gibi yazımlar
+    m = re.search(r'(?<![A-Z])([A-F])[\s\-_\.]*SUBE', t)
+    if m:
+        return m.group(1)
+
+    # 3) Tek başına duran harf (en sondaki geçerli sayılır)
+    harfler = re.findall(r'(?<![A-Z])([A-F])(?![A-Z])', t)
+    if harfler:
+        return harfler[-1]
+    return None
+
+
+def hazirlik_eslesir(ders_adi, dosya_adi):
+    """
+    Hazırlık dersi ile hazırlık dosyası eşleşir mi?
+    İkisinde de şube harfi varsa harfler aynı olmalı.
+    Birinde harf yoksa (ör. tüm şubelerin ortak sınavı) eşleşmeye izin verilir.
+    """
+    h_ders = hazirlik_sube_harfi(ders_adi)
+    h_dosya = hazirlik_sube_harfi(dosya_adi)
+    if h_ders and h_dosya:
+        return h_ders == h_dosya
+    return True
+
+
+def hoca_anahtari(isim):
+    """
+    Hoca adlarını karşılaştırmak için normalize eder:
+    Türkçe karakter, noktalama ve tüm boşluklar atılır.
+    'Öğr.Gör. Ali Veli' ile 'Öğr. Gör.  Ali  Veli' aynı anahtarı verir.
+    """
+    t = str(isim).translate(TR_MAP).upper()
+    return re.sub(r'[^A-Z0-9]', '', t)
+
+
+def benzersiz_hocalar(seri):
+    """Dilimdeki hocaları, aynı kişiyi bir kez yazacak şekilde (ilk görülen yazımıyla) döndürür."""
+    gorulen = set()
+    sonuc = []
+    for h in seri:
+        h_str = str(h).strip()
+        if not h_str or h_str.lower() == 'nan':
+            continue
+        anahtar = hoca_anahtari(h_str)
+        if not anahtar or anahtar in gorulen:
+            continue
+        gorulen.add(anahtar)
+        sonuc.append(h_str)
+    return sonuc
+
 
 def main():
     str_lit.title("📋 LİSTECİ OTO-AVCI")
@@ -89,6 +165,7 @@ def main():
         return
 
     if matris_file and str_lit.button("DERSLERİ OTOMATİK GETİR", type="primary"):
+        matris_file.seek(0)
         wb = load_workbook(io.BytesIO(matris_file.read()), data_only=True)
         ws = wb.active
         
@@ -161,26 +238,44 @@ def main():
             for f in ogrenci_dosyalari:
                 dosya_adi_saf = os.path.splitext(f.name)[0]
                 c_dosya = temizle_metin(dosya_adi_saf)
-                is_haz_dosya = "HAZIRLIK" in c_dosya or "HZ" in c_dosya
+                is_haz_dosya = hazirlik_mi(dosya_adi_saf)
                 matched = False
 
                 # Dosya içeriğini belleğe al
+                f.seek(0)
                 f_bytes = f.read()
 
                 for d in str_lit.session_state["dersler"]:
                     c_tam_ders = temizle_metin(d["ders_adi"])
-                    is_haz_ders = "HAZIRLIK" in c_tam_ders or "HZ" in c_tam_ders
-                    
+                    is_haz_ders = hazirlik_mi(d["ders_adi"])
+
+                    # --- HAZIRLIK: şube harfi kontrollü eşleştirme ---
+                    # Bir hazırlık şubesinin birden fazla sınavı olabilir;
+                    # bu yüzden ilk eşleşmede durmuyoruz, harfi tutan TÜM hazırlık derslerine ekliyoruz.
+                    if is_haz_dosya and is_haz_ders:
+                        if hazirlik_eslesir(d["ders_adi"], dosya_adi_saf):
+                            str_lit.session_state["eslesmeler"][d["id"]].append({"isim": f.name, "veri": f_bytes})
+                            eslesen_sayisi += 1
+                            matched = True
+                        continue
+                    if is_haz_dosya or is_haz_ders:
+                        # Biri hazırlık, diğeri değil: eşleşmez
+                        continue
+
+                    # --- MUSİKİ ---
                     if ("MUSIK" in c_dosya) and ("MUSIK" in c_tam_ders):
                         str_lit.session_state["eslesmeler"][d["id"]].append({"isim": f.name, "veri": f_bytes})
                         eslesen_sayisi += 1
                         matched = True
                         break
 
+                    # --- NORMAL DERSLER ---
                     alt_dersler = [x.strip() for x in re.split(r'[-/\n]', d["ders_adi"]) if x.strip()]
                     for alt in alt_dersler:
                         c_ders = temizle_metin(alt)
-                        if (c_dosya in c_ders or c_ders in c_dosya) or (is_haz_ders and is_haz_dosya):
+                        if len(c_ders) < 3 or len(c_dosya) < 3:
+                            continue
+                        if c_dosya in c_ders or c_ders in c_dosya:
                             str_lit.session_state["eslesmeler"][d["id"]].append({"isim": f.name, "veri": f_bytes})
                             eslesen_sayisi += 1
                             matched = True
@@ -191,9 +286,9 @@ def main():
                     eslesmeyenler.append(f.name)
 
             if eslesmeyenler:
-                str_lit.warning(f"{eslesen_sayisi} dosya eşleşti. Eşleşmeyen listeler mevcut:\n" + "\n".join(eslesmeyenler))
+                str_lit.warning(f"{eslesen_sayisi} eşleşme yapıldı. Eşleşmeyen listeler mevcut:\n" + "\n".join(eslesmeyenler))
             else:
-                str_lit.success(f"Mükemmel! Yüklenen {eslesen_sayisi} listenin tamamı derslerle eşleşti!")
+                str_lit.success(f"Mükemmel! Yüklenen listelerin tamamı derslerle eşleşti ({eslesen_sayisi} eşleşme).")
 
         # OLUŞTURULAN SINAV LİSTELERİ PANELİ
         str_lit.markdown("---")
@@ -234,9 +329,12 @@ def main():
         str_lit.markdown("### 📥 3. AŞAMA: LİSTELERİ TANZİM ET VE ZIP OLARAK AL")
         
         if str_lit.button("🔥 TÜM LİSTELERİ HAZIRLA VE İNDİRME LİNKİ OLUŞTUR", type="primary"):
+            if matris_file is None:
+                str_lit.error("Matris dosyası artık yüklü görünmüyor. Lütfen 1. aşamada matrisi tekrar seçin.")
+                return
+
             import zipfile
             zip_buffer = io.BytesIO()
-            m_maketrans = str.maketrans("çğıöşüîâûÇĞİÖŞÜÎÂÛ", "CGIOSUUAUCGIOSUUAU")
             
             # Matrisi tekrar okuyoruz
             matris_file.seek(0)
@@ -251,13 +349,11 @@ def main():
                     if not dosyalar: continue
                     
                     havuz = []
-                    c_tam_ders = str(d["ders_adi"]).translate(m_maketrans).upper()
-                    ders_hazirlik_mi = "HAZIRLIK" in c_tam_ders or "HZ" in c_tam_ders
+                    ders_hazirlik_mi = hazirlik_mi(d["ders_adi"])
                     
                     for f_data in dosyalar:
                         try:
-                            c_dosya = str(f_data["isim"]).translate(m_maketrans).upper()
-                            if ders_hazirlik_mi or "HAZIRLIK" in c_dosya or "HZ" in c_dosya:
+                            if ders_hazirlik_mi or hazirlik_mi(f_data["isim"]):
                                 t = pd.read_excel(io.BytesIO(f_data["veri"]), skiprows=2).iloc[:, [1, 2, 3]].copy()
                                 t.columns = ['No', 'Ad', 'Soyad']
                                 t['Sorumlu'] = "HAZIRLIK KOORDİNATÖRLÜĞÜ"
@@ -277,16 +373,22 @@ def main():
                     
                     if not havuz: continue
                     df = pd.concat(havuz, ignore_index=True)
+
+                    # Aynı hocanın farklı yazımları (Öğr.Gör. / Öğr. Gör.) tek grup olarak sıralansın
+                    df['_sorumlu_norm'] = df['Sorumlu'].apply(hoca_anahtari)
+
                     sk = str_lit.session_state["siralamalar"].get(d_id, "No")
                     
                     if sk == "No": 
-                        df = df.sort_values(by=['Sorumlu', 'No'])
+                        df = df.sort_values(by=['_sorumlu_norm', 'No'])
                     elif sk == "Ad":
-                        df['sk'] = df['Ad'].apply(lambda x: str(x).translate(m_maketrans).upper().strip())
-                        df = df.sort_values(by=['Sorumlu', 'sk', 'No']).drop(columns=['sk'])
+                        df['sk'] = df['Ad'].apply(lambda x: str(x).translate(TR_MAP).upper().strip())
+                        df = df.sort_values(by=['_sorumlu_norm', 'sk', 'No']).drop(columns=['sk'])
                     else:
-                        df['sk'] = df['Soyad'].apply(lambda x: str(x).translate(m_maketrans).upper().strip())
-                        df = df.sort_values(by=['Sorumlu', 'sk', 'No']).drop(columns=['sk'])
+                        df['sk'] = df['Soyad'].apply(lambda x: str(x).translate(TR_MAP).upper().strip())
+                        df = df.sort_values(by=['_sorumlu_norm', 'sk', 'No']).drop(columns=['sk'])
+
+                    df = df.drop(columns=['_sorumlu_norm']).reset_index(drop=True)
 
                     c_idx = column_index_from_string("".join(filter(str.isalpha, d["hucre"])))
                     gorevler = []
@@ -315,7 +417,7 @@ def main():
 
                     f_wb = load_workbook(sablon_yol)
                     idx = 0
-                    for p_od od in plan:
+                    for p_od in plan:
                         g, kap = p_od['b'], p_od['m']
                         dilim = df.iloc[idx : idx + kap]
                         target_sheet_name = "Sayfa2" if g['sinif'] in ['205', '305'] else "Sayfa1"
@@ -326,8 +428,9 @@ def main():
                         sh.title = f"Sinif_{g['sinif']}"
                         sh['B3'], sh['G5'], sh['C4'], sh['G4'] = d["ders_adi"], d["saat"], g['sinif'], d["tarih"]
                         
-                        hocalar = dilim['Sorumlu'].unique()
-                        hoca_metni = "\n".join([str(h).strip() for h in hocalar if str(h).strip() and str(h).lower() != 'nan'])
+                        # İmza alanı: yalnızca BU sınıftaki öğrencilerin hocaları, her hoca bir kez
+                        hocalar = benzersiz_hocalar(dilim['Sorumlu'])
+                        hoca_metni = "\n".join(hocalar)
                         r_alt = '75' if g['sinif'] in ['205', '305'] else '45'
                         sh[f'E{r_alt}'] = g['goz']
                         t_h = sh[f'A{r_alt}']
