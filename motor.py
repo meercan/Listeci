@@ -292,6 +292,51 @@ def ad_anahtari(metin):
     return " ".join(sorted(kel)) + "#" + ",".join(str(x) for x in sorted(say))
 
 
+def ad_parcala(metin):
+    """Ad → (kelimeler, sayılar). Kelime = (metin, kısaltma_mı).
+    'İ.ARAŞTIRMALARINDA USÜL' → [('I', kısaltma), ('ARASTIRMALARINDA',), ('USUL',)]
+    Noktalı harf(ler)den sonra kelime geliyorsa kısaltmadır ('İ.', 'TEF.'), Roma rakamı değil."""
+    t = kodsuz(metin)
+    t = re.sub(r"[’‘'`´ʼʻ′‛]", "", t)
+    t = re.sub(r"([A-Z])-I(?=\s+[A-Z]{2})", r"\1", t)          # Kur'an-ı Kerim, Ehl-i Kitap
+    kelimeler, sayilar = [], set()
+    for m_ in re.finditer(r"([A-Z]+)(\s*\.)?(?=(\s*)([A-Z]?))|(\d+)", t):
+        if m_.group(5):
+            if len(m_.group(5)) <= 2:
+                sayilar.add(int(m_.group(5)))
+            continue
+        tok, nokta, sonraki = m_.group(1), m_.group(2), m_.group(4)
+        if nokta and sonraki:                      # 'İ.ARAŞTIRMA', 'TEF. METİNLERİ'
+            kelimeler.append((tok, True))
+            continue
+        if tok in ROMA:
+            sayilar.add(ROMA[tok])
+            continue
+        if tok in DOLGU or len(tok) == 1:
+            continue
+        kelimeler.append((tok, False))
+    return kelimeler, sayilar
+
+
+def ad_ayni_mi(dosya_adi, ders_parcasi):
+    """Kelime kelime aynı mı? Kısaltmalı kelime, uzun hâlinin başıyla tutarsa aynı sayılır."""
+    fw, fn = ad_parcala(dosya_adi)
+    cw, cn = ad_parcala(ders_parcasi)
+    if not fw or not cw or len(fw) != len(cw):
+        return False
+    if fn != cn and not (fn and not cn):           # dosyadaki tek sayı liste numarası olabilir ('Siyer 2')
+        return False
+    for (f, fk), (c, ck) in zip(fw, cw):
+        if f == c:
+            continue
+        if ck and f.startswith(c):
+            continue
+        if fk and c.startswith(f):
+            continue
+        return False
+    return True
+
+
 def ders_ad_anahtarlari(ders_adi):
     """Bir matris hücresindeki bütün ad anahtarları (birleşik sınavlar: 'Tefsir I - Hadis I', alt alta yazılanlar)."""
     anahtarlar = set()
@@ -339,19 +384,12 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
             return {"idler": idler, "durum": "kontrol" if belirsiz else "otomatik", "aciklama": ack, "skor": 1.0}
         return {"idler": [], "durum": "yok", "aciklama": "Hazırlık listesi ama matriste uygun hazırlık sınavı yok", "skor": 0.0}
 
-    # 4) Ders adı (kod ve İ.Ö/N.Ö çıkarılmış hâliyle birebir)
-    f_ad = ad_anahtari(dosya_adi)
-    if f_ad:
-        idler = [d["id"] for d in dersler if f_ad in ders_ad_anahtarlari(d["ders_adi"])]
-        if not idler and not f_ad.endswith("#"):
-            # Dosyadaki sayı ders numarası değil liste numarası olabilir ('Siyer 2.xlsx'):
-            # yalnızca adında hiç numara olmayan derslerle, kelimeler birebir aynıysa eşleştir
-            kelime = f_ad.split("#")[0] + "#"
-            idler = [d["id"] for d in dersler if kelime in ders_ad_anahtarlari(d["ders_adi"])]
-        if idler:
-            return {"idler": idler, "durum": "otomatik",
-                    "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
-                    "skor": 1.0}
+    # 4) Ders adı (kod ve parantezden sonrası atılmış hâliyle, kelime kelime; kısaltmalar tolere edilir)
+    idler = [d["id"] for d in dersler if any(ad_ayni_mi(dosya_adi, p) for p in ders_parcalari(d["ders_adi"]))]
+    if idler:
+        return {"idler": idler, "durum": "otomatik",
+                "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
+                "skor": 1.0}
 
     # Eşleşmedi: en yakın dersi yalnızca bilgi olarak göster (seçmez)
     en_iyi, d1 = 0.0, None
