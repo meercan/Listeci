@@ -257,9 +257,30 @@ def kodlar(metin):
     return sonuc
 
 
-def kodsuz(metin):
+OGRETIM_RE = re.compile(r"(?<![A-Z])(I|N)\s*\.?\s*O(?![A-Z])\.?")
+
+
+def ogretim(metin):
+    """'(İ.Ö)', 'İÖ', 'İkinci Öğretim' → 'IO';  '(N.Ö)', 'NÖ', 'Normal Öğretim' → 'NO';  yoksa None."""
     t = ascii_buyuk(dosya_govdesi(metin))
-    return KOD_RE.sub(" ", t)
+    if "IKINCI OGRETIM" in t:
+        return "IO"
+    if "NORMAL OGRETIM" in t:
+        return "NO"
+    m_ = OGRETIM_RE.search(t)
+    return (m_.group(1) + "O") if m_ else None
+
+
+def kodsuz(metin):
+    """Ad karşılaştırması için temizlenmiş metin: kod, İ.Ö/N.Ö etiketi ve parantezden sonrası atılır.
+    'İİF106 İSLAM İBADET ESASLARI (N.Ö) 2' → 'ISLAM IBADET ESASLARI'"""
+    t = ascii_buyuk(dosya_govdesi(metin))
+    t = KOD_RE.sub(" ", t)
+    t = re.sub(r"IKINCI OGRETIM|NORMAL OGRETIM", " ", t)
+    t = OGRETIM_RE.sub(" ", t)
+    t = re.sub(r"\(.*$", " ", t, flags=re.S)      # parantez ve sonrası: (İ.Ö), (A Şubesi), liste no
+    t = re.sub(r"[\s_\-]+\d{1,2}\s*$", " ", t) if "(" in ascii_buyuk(dosya_govdesi(metin)) else t
+    return t
 
 
 def ad_anahtari(metin):
@@ -318,10 +339,15 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
             return {"idler": idler, "durum": "kontrol" if belirsiz else "otomatik", "aciklama": ack, "skor": 1.0}
         return {"idler": [], "durum": "yok", "aciklama": "Hazırlık listesi ama matriste uygun hazırlık sınavı yok", "skor": 0.0}
 
-    # 4) Ders adı (kod çıkarılmış hâliyle birebir)
+    # 4) Ders adı (kod ve İ.Ö/N.Ö çıkarılmış hâliyle birebir)
     f_ad = ad_anahtari(dosya_adi)
     if f_ad:
         idler = [d["id"] for d in dersler if f_ad in ders_ad_anahtarlari(d["ders_adi"])]
+        if not idler and not f_ad.endswith("#"):
+            # Dosyadaki sayı ders numarası değil liste numarası olabilir ('Siyer 2.xlsx'):
+            # yalnızca adında hiç numara olmayan derslerle, kelimeler birebir aynıysa eşleştir
+            kelime = f_ad.split("#")[0] + "#"
+            idler = [d["id"] for d in dersler if kelime in ders_ad_anahtarlari(d["ders_adi"])]
         if idler:
             return {"idler": idler, "durum": "otomatik",
                     "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
