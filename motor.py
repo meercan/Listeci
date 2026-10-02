@@ -101,7 +101,7 @@ DOLGU = {
 def tokenler(metin):
     """Ad → (anlamlı kelimeler, sayılar). Roma rakamları sayıya çevrilir: 'II' = '2'."""
     t = ascii_buyuk(dosya_govdesi(metin))
-    t = re.sub(r"[’'`´ʼ]", "", t)                 # Kur'an → KURAN
+    t = re.sub(r"[’‘'`´ʼʻ′‛\u2019\u2018\u02bc\u02bb\u00b4]", "", t)   # Kur'an / Kur’an / Kur‘an → KURAN
     t = re.sub(r"([A-Z])-I(?=\s+[A-Z]{2})", r"\1", t)   # Kur'an-ı Kerim, Siyer-i Nebi: izafet, rakam değil
     t = re.sub(r"(\d+)\s*\.", r"\1 ", t)
     kelimeler, sayilar = [], set()
