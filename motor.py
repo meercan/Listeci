@@ -239,15 +239,52 @@ def benzersiz_hocalar(seri):
 
 
 # ─────────────────────────────────────────────────────────────
-# Eşleştirme
+# Eşleştirme: 1) hafıza  2) ders kodu  3) hazırlık  4) ders adı (birebir)
 # ─────────────────────────────────────────────────────────────
-OTOMATIK_ESIK = 0.85
-ONERI_ESIK = 0.60
+KOD_RE = re.compile(r"(?<![A-Z0-9])([A-Z]{2,5})[\s\-_.]?(\d{3,4})(?![0-9])")
+
+
+def kodlar(metin):
+    """'İLH101 Tefsir I', 'ILH 101', 'ilh-101' → {'ILH101'}. Yıl gibi sayılar (2025) kod sayılmaz."""
+    t = ascii_buyuk(dosya_govdesi(metin))
+    sonuc = set()
+    for harf, sayi in KOD_RE.findall(t):
+        if len(sayi) == 4 and sayi[:2] in ("19", "20"):
+            continue
+        if harf in DOLGU or harf in ROMA:
+            continue
+        sonuc.add(harf + sayi)
+    return sonuc
+
+
+def kodsuz(metin):
+    t = ascii_buyuk(dosya_govdesi(metin))
+    return KOD_RE.sub(" ", t)
+
+
+def ad_anahtari(metin):
+    """Karşılaştırma anahtarı: kod, uzantı, dolgu kelimeler, Türkçe harf farkı atılır; I/II = 1/2.
+    'İLH101 - Tefsir I', 'tefsir 1.xlsx', 'Tefsir I Öğrenci Listesi' → aynı anahtar."""
+    kel, say = tokenler(kodsuz(metin))
+    if not kel:
+        return None
+    return " ".join(sorted(kel)) + "#" + ",".join(str(x) for x in sorted(say))
+
+
+def ders_ad_anahtarlari(ders_adi):
+    """Bir matris hücresindeki bütün ad anahtarları (birleşik sınavlar: 'Tefsir I - Hadis I', alt alta yazılanlar)."""
+    anahtarlar = set()
+    for p in ders_parcalari(ders_adi):
+        a = ad_anahtari(p)
+        if a:
+            anahtarlar.add(a)
+    return anahtarlar
 
 
 def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
     """
     Dönüş: {"idler": [...], "durum": "otomatik"|"hafiza"|"kontrol"|"yok", "aciklama": str, "skor": float}
+    Tahmin yürütmez: kod ya da ad birebir tutmuyorsa boş bırakır, en yakın dersi yalnızca açıklamada söyler.
     """
     hafiza = hafiza or {}
     hz = lambda ad: hazirlik_dersi_mi(ad, hz_dersleri)
@@ -260,7 +297,16 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
         if idler:
             return {"idler": idler, "durum": "hafiza", "aciklama": "Önceki elle eşleştirmeden hatırlandı", "skor": 1.0}
 
-    # 2) Hazırlık: şube harfi tutan bütün hazırlık sınavları
+    # 2) Ders kodu
+    f_kod = kodlar(dosya_adi)
+    if f_kod:
+        idler = [d["id"] for d in dersler if kodlar(d["ders_adi"]) & f_kod]
+        if idler:
+            return {"idler": idler, "durum": "otomatik",
+                    "aciklama": f"Ders kodu {', '.join(sorted(f_kod))}" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
+                    "skor": 1.0}
+
+    # 3) Hazırlık: şube harfi tutan bütün hazırlık sınavları
     if hazirlik_mi(dosya_adi):
         hz_dersler = [d for d in dersler if hz(d["ders_adi"])]
         idler = [d["id"] for d in hz_dersler if hazirlik_eslesir(d["ders_adi"], dosya_adi)]
@@ -272,35 +318,27 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
             return {"idler": idler, "durum": "kontrol" if belirsiz else "otomatik", "aciklama": ack, "skor": 1.0}
         return {"idler": [], "durum": "yok", "aciklama": "Hazırlık listesi ama matriste uygun hazırlık sınavı yok", "skor": 0.0}
 
-    # 3) Ad benzerliği (hazırlık dersleri hariç)
-    skorlar = []
+    # 4) Ders adı (kod çıkarılmış hâliyle birebir)
+    f_ad = ad_anahtari(dosya_adi)
+    if f_ad:
+        idler = [d["id"] for d in dersler if f_ad in ders_ad_anahtarlari(d["ders_adi"])]
+        if idler:
+            return {"idler": idler, "durum": "otomatik",
+                    "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
+                    "skor": 1.0}
+
+    # Eşleşmedi: en yakın dersi yalnızca bilgi olarak göster (seçmez)
+    en_iyi, d1 = 0.0, None
     for d in dersler:
         if hz(d["ders_adi"]):
             continue
-        s = max(ad_skoru(dosya_adi, p) for p in ders_parcalari(d["ders_adi"]))
-        if s > 0:
-            skorlar.append((s, d))
-    if not skorlar:
-        return {"idler": [], "durum": "yok", "aciklama": "Benzer ders adı bulunamadı", "skor": 0.0}
-
-    skorlar.sort(key=lambda x: -x[0])
-    en_iyi, d1 = skorlar[0]
-    # Aynı skoru alan, adı birebir aynı dersler (aynı ders matriste iki kez) birlikte seçilir
-    esler = [d for s, d in skorlar if s == en_iyi and sade(d["ders_adi"]) == sade(d1["ders_adi"])]
-    rakip = next((s for s, d in skorlar if d not in esler), 0.0)
-    idler = [d["id"] for d in esler]
-
-    if en_iyi >= OTOMATIK_ESIK and en_iyi - rakip >= 0.05 and len(esler) == 1:
-        return {"idler": idler, "durum": "otomatik", "aciklama": f"%{int(en_iyi*100)} benzerlik", "skor": en_iyi}
-    if en_iyi >= ONERI_ESIK:
-        if len(esler) > 1:
-            neden = "aynı adlı ders matriste birden fazla"
-        elif en_iyi - rakip < 0.05:
-            neden = "başka bir ders de çok benziyor"
-        else:
-            neden = f"%{int(en_iyi*100)} benzerlik"
-        return {"idler": idler, "durum": "kontrol", "aciklama": f"Öneri — {neden}", "skor": en_iyi}
-    return {"idler": [], "durum": "yok", "aciklama": f"En yakın ders yalnızca %{int(en_iyi*100)} benziyor ({d1['ders_adi']})", "skor": en_iyi}
+        s = max(ad_skoru(kodsuz(dosya_adi), kodsuz(p)) for p in ders_parcalari(d["ders_adi"]))
+        if s > en_iyi:
+            en_iyi, d1 = s, d
+    ack = "Kod ya da ad tutmadı"
+    if d1 is not None and en_iyi >= 0.6:
+        ack += f" — en yakın: {d1['ders_adi']}"
+    return {"idler": [], "durum": "yok", "aciklama": ack, "skor": en_iyi}
 
 
 # ─────────────────────────────────────────────────────────────
