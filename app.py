@@ -123,11 +123,27 @@ def elle_degisti(ad):
         d["durum"] = "manuel" if secim else "yok"
         d["aciklama"] = "Elle seçildi" if secim else "Elle boşaltıldı"
     dersler = {x["id"]: x for x in v["matris"]["dersler"]}
-    anahtar = m.sade(m.dosya_govdesi(ad))
+    hedef = [m.sade(dersler[i]["ders_adi"]) for i in secim if i in dersler]
+
+    def hafizaya(dosya):
+        a = m.sade(m.dosya_govdesi(dosya))
+        if hedef:
+            v["hafiza"][a] = hedef
+        else:
+            v["hafiza"].pop(a, None)
+
+    hafizaya(ad)
+    # Aynı derse ait, henüz eşleşmemiş diğer listeler de aynı sınava eklensin
     if secim:
-        v["hafiza"][anahtar] = [m.sade(dersler[i]["ders_adi"]) for i in secim if i in dersler]
-    else:
-        v["hafiza"].pop(anahtar, None)
+        kardesler = [a for a, x in v["dosyalar"].items()
+                     if a != ad and x["durum"] in ("yok", "kontrol") and m.ayni_ders_mi(ad, a)]
+        for a in kardesler:
+            v[sec_anahtari(a)] = list(secim)
+            v["dosyalar"][a]["durum"] = "manuel"
+            v["dosyalar"][a]["aciklama"] = f"'{ad}' ile birlikte eşleştirildi"
+            hafizaya(a)
+        if kardesler:
+            v["kardes_bildirim"] = f"Aynı dersin {len(kardesler)} listesi daha eklendi: " + ", ".join(kardesler)
     hafiza_kaydet()
     v["cikti"] = None
 
@@ -143,13 +159,22 @@ def kenar_cubugu():
     v = st.session_state
     with st.sidebar:
         st.header("⚙️ Ayarlar")
+        if "donem" not in v:
+            sab = v.get("sablon_veri")
+            if sab is None and os.path.exists("sablon.xlsx"):
+                with open("sablon.xlsx", "rb") as f:
+                    sab = f.read()
+            v["donem"] = m.sablon_donem_metni(sab) if sab else ""
+        st.text_input("📅 Eğitim-öğretim dönemi (liste başlığı)", key="donem",
+                      help="Buraya ne yazarsan bütün listelerin başlığındaki dönem satırına o yazılır. "
+                           "Örn: 2025-2026 BAHAR DÖNEMİ FİNAL SINAVLARI")
         nk = st.number_input("Normal salon kapasitesi", 1, m.NORMAL_KAP_MAX, 34,
                              help=f"Şablonun Sayfa1'inde en fazla {m.NORMAL_KAP_MAX} satır var (7–44).")
         bs = st.text_input("Büyük salonlar (virgülle)", "205, 305",
                            help="Bu salonlar şablonun Sayfa2'sine (uzun liste) yazılır.")
         bk = st.number_input("Büyük salon kapasitesi", 1, m.BUYUK_KAP_MAX, 68,
                              help=f"Şablonun Sayfa2'sinde en fazla {m.BUYUK_KAP_MAX} satır var (7–74).")
-        v["ayar"] = m.ayar_duzelt({"normal_kap": nk, "buyuk_kap": bk,
+        v["ayar"] = m.ayar_duzelt({"normal_kap": nk, "buyuk_kap": bk, "donem": v.get("donem", ""),
                                    "buyuk_salonlar": [x for x in bs.replace(";", ",").split(",")]})
         v["varsayilan_sira"] = st.radio("Varsayılan sıralama", ["No", "Ad", "Soyad"], horizontal=True)
 
@@ -189,7 +214,7 @@ def kenar_cubugu():
         if st.button("🔄 Yeni oturum (her şeyi temizle)", width="stretch"):
             hafiza = v["hafiza"]
             for k in list(v.keys()):
-                if k not in ("giris",):
+                if k not in ("giris", "donem"):
                     del v[k]
             v["hafiza"] = hafiza
             st.rerun()
@@ -302,6 +327,9 @@ def adim_listeler():
                            format_func=lambda i: ders_etiketi(ders_map[i]),
                            key=sec_anahtari(ad), on_change=elle_degisti, args=(ad,),
                            label_visibility="collapsed", placeholder="Bu liste hangi sınava ait? Seç…")
+
+    if v.get("kardes_bildirim"):
+        st.success("➕ " + v.pop("kardes_bildirim"))
 
     sorunlu = [a for a, d in dosyalar.items() if d["durum"] in ("kontrol", "yok", "hata", "manuel")]
     sorunlu.sort(key=lambda a: ["hata", "yok", "kontrol", "manuel"].index(dosyalar[a]["durum"]))

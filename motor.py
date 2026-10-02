@@ -337,6 +337,16 @@ def ad_ayni_mi(dosya_adi, ders_parcasi):
     return True
 
 
+def ayni_ders_mi(dosya1, dosya2):
+    """İki liste dosyası aynı derse mi ait? (ortak ders kodu ya da kelime kelime aynı ad)"""
+    k1, k2 = kodlar(dosya1), kodlar(dosya2)
+    if k1 and k2:
+        return bool(k1 & k2)
+    w1, n1 = ad_parcala(dosya1)
+    w2, n2 = ad_parcala(dosya2)
+    return bool(w1) and [w for w, _ in w1] == [w for w, _ in w2] and n1 == n2
+
+
 def ders_ad_anahtarlari(ders_adi):
     """Bir matris hücresindeki bütün ad anahtarları (birleşik sınavlar: 'Tefsir I - Hadis I', alt alta yazılanlar)."""
     anahtarlar = set()
@@ -750,6 +760,49 @@ def _sayfa_adi(ad, mevcut):
     return ad
 
 
+DONEM_RE = re.compile(r"(19|20)\d{2}\s*[-–/]\s*(19|20)\d{2}|DONEM|YARIYIL|SINAVLARI")
+
+
+def _donem_hucresi(ws):
+    """Şablonun üst kısmında dönem satırının bulunduğu hücre ('2025-2026 BAHAR DÖNEMİ FİNAL SINAVLARI')."""
+    for row in ws.iter_rows(min_row=1, max_row=6):
+        for h in row:
+            if isinstance(h.value, str) and DONEM_RE.search(ascii_buyuk(h.value)):
+                return h
+    return None
+
+
+def sablon_donem_metni(sablon_veri):
+    """Şablondaki mevcut dönem satırı (arayüzdeki kutuyu doldurmak için)."""
+    try:
+        wb = load_workbook(io.BytesIO(sablon_veri))
+        h = _donem_hucresi(wb.worksheets[0])
+        if h is None:
+            return ""
+        satirlar = str(h.value).split("\n")
+        return next((x for x in satirlar if DONEM_RE.search(ascii_buyuk(x))), satirlar[-1]).strip()
+    except Exception:
+        return ""
+
+
+def _donem_yaz(wb, metin):
+    """Şablon sayfalarındaki dönem satırını değiştirir; hücrede başka satır varsa (fakülte adı) onlara dokunmaz."""
+    if not metin:
+        return
+    for ws in wb.worksheets:
+        h = _donem_hucresi(ws)
+        if h is None:
+            continue
+        satirlar = str(h.value).split("\n")
+        degisti = False
+        for i, x in enumerate(satirlar):
+            if DONEM_RE.search(ascii_buyuk(x)):
+                satirlar[i] = metin
+                degisti = True
+                break
+        h.value = "\n".join(satirlar) if degisti else metin
+
+
 def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
     """Dönüş: (xlsx_bytes | None, bilgi)"""
     ayar = ayar_duzelt(ayar)
@@ -761,6 +814,7 @@ def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
         return None, bilgi
 
     wb = load_workbook(io.BytesIO(sablon_veri))
+    _donem_yaz(wb, str(ayar.get("donem") or "").strip())
     sablon_sayfalari = list(wb.sheetnames)
     idx = 0
     for s, k, buyuk in plan:
