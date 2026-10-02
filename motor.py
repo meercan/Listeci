@@ -661,7 +661,12 @@ def ders_ogrencileri(dosya_dfleri):
 
 def sirala(df, kriter="No"):
     d = df.copy()
-    d["_h"] = d["Sorumlu"].map(hoca_anahtari)
+    # Hoca grupları: kalabalık grup önce, küçük grup sona; 'Belirtilmedi' en sonda.
+    # Aynı hocanın farklı yazımları (Öğr.Gör. / Öğr. Gör.) tek grup sayılır.
+    anahtar = d["Sorumlu"].map(hoca_anahtari)
+    sayim = anahtar.value_counts()
+    d["_h"] = anahtar.map(lambda a: ("1" if a == "BELIRTILMEDI" else "0")
+                          + str(100000 - int(sayim[a])).zfill(6) + a)
     d["_no"] = d["No"].map(lambda x: re.sub(r"\D", "", x).zfill(20) + x)
     d["_ad"] = d["Ad"].map(tr_sira)
     d["_soyad"] = d["Soyad"].map(tr_sira)
