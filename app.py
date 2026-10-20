@@ -169,11 +169,11 @@ def kenar_cubugu():
                       help="Buraya ne yazarsan bütün listelerin başlığındaki dönem satırına o yazılır. "
                            "Örn: 2025-2026 BAHAR DÖNEMİ FİNAL SINAVLARI")
         nk = st.number_input("Normal salon kapasitesi", 1, m.NORMAL_KAP_MAX, 34,
-                             help=f"Şablonun Sayfa1'inde en fazla {m.NORMAL_KAP_MAX} satır var (7–44).")
+                             help=f"Şablonun Sayfa1'inde en fazla {m.NORMAL_KAP_MAX} satır var (7–40).")
         bs = st.text_input("Büyük salonlar (virgülle)", "205, 305",
                            help="Bu salonlar şablonun Sayfa2'sine (uzun liste) yazılır.")
-        bk = st.number_input("Büyük salon kapasitesi", 1, m.BUYUK_KAP_MAX, 68,
-                             help=f"Şablonun Sayfa2'sinde en fazla {m.BUYUK_KAP_MAX} satır var (7–74).")
+        bk = st.number_input("Büyük salon kapasitesi", 1, m.BUYUK_KAP_MAX, 70,
+                             help=f"Şablonun Sayfa2'sinde en fazla {m.BUYUK_KAP_MAX} satır var (7–76).")
         v["ayar"] = m.ayar_duzelt({"normal_kap": nk, "buyuk_kap": bk, "donem": v.get("donem", ""),
                                    "buyuk_salonlar": [x for x in bs.replace(";", ",").split(",")]})
         v["varsayilan_sira"] = st.radio("Varsayılan sıralama", ["No", "Ad", "Soyad"], horizontal=True)

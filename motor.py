@@ -10,6 +10,7 @@ LİSTECİ v3 — motor (arayüzden bağımsız iş mantığı)
   • paket_olustur()   : tüm dersler + RAPOR.xlsx → ZIP
 """
 import difflib
+from copy import copy
 import io
 import os
 import re
@@ -28,14 +29,14 @@ SURUM = "3.0"
 # ─────────────────────────────────────────────────────────────
 ILK_SATIR = 7          # öğrenci listesinin başladığı satır
 NORMAL_IMZA = 45       # Sayfa1 (normal salon) imza satırı
-BUYUK_IMZA = 75        # Sayfa2 (büyük salon) imza satırı
-NORMAL_KAP_MAX = NORMAL_IMZA - ILK_SATIR   # 38 — bundan fazlası imza alanına taşar
-BUYUK_KAP_MAX = BUYUK_IMZA - ILK_SATIR     # 68
+BUYUK_IMZA = 81        # Sayfa2 (büyük salon) imza satırı; 2. gözetmen bir alt satıra (82) yazılır
+NORMAL_KAP_MAX = 34    # Sayfa1'de 7–40 arası numaralı 34 satır var
+BUYUK_KAP_MAX = 70     # Sayfa2'de 7–76 arası numaralı 70 satır var
 
 VARSAYILAN_AYAR = {
     "normal_kap": 34,
     "buyuk_salonlar": ["205", "305"],
-    "buyuk_kap": 68,
+    "buyuk_kap": 70,
 }
 
 HAZIRLIK_SORUMLU = "HAZIRLIK KOORDİNATÖRLÜĞÜ"
@@ -829,9 +830,13 @@ def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
 
         r_alt = BUYUK_IMZA if buyuk else NORMAL_IMZA
         goz = s["gozetmenler"]
-        sh[f"E{r_alt}"] = "\n".join(goz)
-        if len(goz) > 1:
-            sh[f"E{r_alt}"].alignment = Alignment(wrapText=True, vertical="center")
+        # Her gözetmen imza alanında ayrı satıra, alt alta yazılır
+        for j, ad in enumerate(goz or [""]):
+            r_g = r_alt + j
+            if j and f"E{r_g}:H{r_g}" not in {str(x) for x in sh.merged_cells.ranges}:
+                sh.merge_cells(f"E{r_g}:H{r_g}")
+                sh[f"E{r_g}"]._style = copy(sh[f"E{r_alt}"]._style)
+            sh[f"E{r_g}"] = ad
 
         hocalar = benzersiz_hocalar(dilim["Sorumlu"])
         t_h = sh[f"A{r_alt}"]
