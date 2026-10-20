@@ -272,13 +272,19 @@ def ogretim(metin):
     return (m_.group(1) + "O") if m_ else None
 
 
+# Hazırlık ders kodları rakamsızdır: 'İFHZN NAHİV 3', 'İFHYA YAZILI ANLATIM 1', 'İİFHZOA OKUMA ANLAMA 2'
+HZ_KOD_RE = re.compile(r"(?<![A-Z0-9])I{1,2}FH[A-Z]{1,3}(?![A-Z0-9])")
+
+
 def kodsuz(metin):
     """Ad karşılaştırması için temizlenmiş metin: kod, İ.Ö/N.Ö etiketi ve parantezden sonrası atılır.
     'İİF106 İSLAM İBADET ESASLARI (N.Ö) 2' → 'ISLAM IBADET ESASLARI'"""
     t = ascii_buyuk(dosya_govdesi(metin))
     t = KOD_RE.sub(" ", t)
-    t = re.sub(r"IKINCI OGRETIM|NORMAL OGRETIM", " ", t)
-    t = OGRETIM_RE.sub(" ", t)
+    t = HZ_KOD_RE.sub(" ", t)
+    # Öğretim etiketi ve ondan sonrası (şube no/harfi) atılır: 'TEFSİR I N.Ö 2' → 'TEFSİR I', 'ARAPÇA V N.Ö A' → 'ARAPÇA V'
+    t = re.sub(r"(IKINCI|NORMAL) OGRETIM.*$", " ", t, flags=re.S)
+    t = re.sub(r"(?<![A-Z])(I|N)\s*\.?\s*O(?![A-Z])\.?.*$", " ", t, flags=re.S)
     t = re.sub(r"\(.*$", " ", t, flags=re.S)      # parantez ve sonrası: (İ.Ö), (A Şubesi), liste no
     t = re.sub(r"[\s_\-]+\d{1,2}\s*$", " ", t) if "(" in ascii_buyuk(dosya_govdesi(metin)) else t
     return t
@@ -358,6 +364,31 @@ def ders_ad_anahtarlari(ders_adi):
     return anahtarlar
 
 
+def ad_ile_eslestir(dosya_adi, dersler):
+    """Ada göre eşleştirme. Önce birebir (rakamlar dahil); tutmazsa ve dosya adında Roma rakamı/numara
+    eksikse ('İSLAM FELSEFESİ İ.Ö' ↔ 'İslam Felsefesi I', 'KUR'AN KISSALARI' ↔ 'Kur'an Kıssaları I')
+    rakamı yok sayarak dener; yalnız TEK bir sınava denk gelirse kabul eder."""
+    idler = [d["id"] for d in dersler if any(ad_ayni_mi(dosya_adi, p) for p in ders_parcalari(d["ders_adi"]))]
+    if idler:
+        return {"idler": idler, "durum": "otomatik",
+                "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""), "skor": 1.0}
+    fw, fn = ad_parcala(dosya_adi)
+    if not fw or fn:
+        return None
+    adaylar = []
+    for d in dersler:
+        for p in ders_parcalari(d["ders_adi"]):
+            cw, cn = ad_parcala(p)
+            if len(cw) == len(fw) and all(f == c or (ck and f.startswith(c)) or (fk and c.startswith(f))
+                                         for (f, fk), (c, ck) in zip(fw, cw)):
+                adaylar.append(d["id"])
+                break
+    if len(adaylar) == 1:
+        return {"idler": adaylar, "durum": "otomatik", "skor": 0.9,
+                "aciklama": "Ders adı aynı (dosya adında ders numarası yok)"}
+    return None
+
+
 def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
     """
     Dönüş: {"idler": [...], "durum": "otomatik"|"hafiza"|"kontrol"|"yok", "aciklama": str, "skor": float}
@@ -377,11 +408,34 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
     # 2) Ders kodu
     f_kod = kodlar(dosya_adi)
     if f_kod:
-        idler = [d["id"] for d in dersler if kodlar(d["ders_adi"]) & f_kod]
-        if idler:
-            return {"idler": idler, "durum": "otomatik",
-                    "aciklama": f"Ders kodu {', '.join(sorted(f_kod))}" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
-                    "skor": 1.0}
+        kod_dersler = [d for d in dersler if kodlar(d["ders_adi"]) & f_kod]
+        if kod_dersler:
+            idler = [d["id"] for d in kod_dersler]
+            ack = f"Ders kodu {', '.join(sorted(f_kod))}" + (f" → {len(idler)} sınav" if len(idler) > 1 else "")
+            # Dosya adındaki kod yanlış yazılmış olabilir ('İİF 127 ARAPÇA III' → Tefsir Tarihi'nin kodu).
+            # Kod tuttuğu hâlde ad hiç benzemiyorsa otomatik bağlama, kontrol iste.
+            f_ad = kodsuz(dosya_adi)
+            if tokenler(f_ad)[0]:
+                fw = tokenler(f_ad)[0]
+
+                def kelime_uyumu(p):
+                    cw = tokenler(kodsuz(p))[0]
+                    if not cw:
+                        return True
+                    ortak = sum(1 for c in cw if any(_kelime_benzer(c, f) for f in fw))
+                    return ortak / len(cw) >= 0.5 or ortak / len(fw) >= 0.5
+
+                uyumsuz = [d for d in kod_dersler if not any(kelime_uyumu(p) for p in ders_parcalari(d["ders_adi"]))]
+                if uyumsuz:
+                    ad_sonuc = ad_ile_eslestir(dosya_adi, dersler)
+                    if ad_sonuc:
+                        ad_sonuc["aciklama"] = (f"Dosyadaki kod {', '.join(sorted(f_kod))} başka derse ait "
+                                                f"({uyumsuz[0]['ders_adi']}); ders adından bağlandı")
+                        return ad_sonuc
+                    return {"idler": idler, "durum": "kontrol", "skor": 0.5,
+                            "aciklama": ack + f" tuttu ama ders adı farklı ({uyumsuz[0]['ders_adi']}). "
+                                              "Dosya adındaki kod yanlış olabilir"}
+            return {"idler": idler, "durum": "otomatik", "aciklama": ack, "skor": 1.0}
 
     # 3) Hazırlık: şube harfi tutan bütün hazırlık sınavları
     if hazirlik_mi(dosya_adi):
@@ -396,11 +450,9 @@ def eslestir(dosya_adi, dersler, hafiza=None, hz_dersleri=None):
         return {"idler": [], "durum": "yok", "aciklama": "Hazırlık listesi ama matriste uygun hazırlık sınavı yok", "skor": 0.0}
 
     # 4) Ders adı (kod ve parantezden sonrası atılmış hâliyle, kelime kelime; kısaltmalar tolere edilir)
-    idler = [d["id"] for d in dersler if any(ad_ayni_mi(dosya_adi, p) for p in ders_parcalari(d["ders_adi"]))]
-    if idler:
-        return {"idler": idler, "durum": "otomatik",
-                "aciklama": "Ders adı aynı" + (f" → {len(idler)} sınav" if len(idler) > 1 else ""),
-                "skor": 1.0}
+    sonuc = ad_ile_eslestir(dosya_adi, dersler)
+    if sonuc:
+        return sonuc
 
     # Eşleşmedi: en yakın dersi yalnızca bilgi olarak göster (seçmez)
     en_iyi, d1 = 0.0, None
@@ -518,7 +570,8 @@ def matris_oku(veri):
 # Öğrenci listeleri
 # ─────────────────────────────────────────────────────────────
 def _baslik_turu(v):
-    h = sade(v)
+    # Öğrenci işleri çıktısında başlıkların sonunda kod olur: 'Öğrenci No_9059', 'Adı_9059'
+    h = sade(re.sub(r"[_\s]+\d+\s*$", "", str(v))) if not bos_mu(v) else ""
     if not h:
         return None
     if h in ("SIRA", "SIRANO", "SN", "SNO", "SIRANUMARASI", "SIRANUMARA"):
