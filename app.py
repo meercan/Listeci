@@ -7,7 +7,11 @@ import os
 import pandas as pd
 import streamlit as st
 
+import importlib
+
 import motor as m
+
+m = importlib.reload(m)  # GitHub'dan yeni sürüm gelince eski kod bellekte kalmasın
 
 st.set_page_config(page_title="LİSTECİ v3", page_icon="📋", layout="wide")
 

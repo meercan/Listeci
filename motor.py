@@ -22,7 +22,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-SURUM = "3.0"
+SURUM = "3.2"
 
 # ─────────────────────────────────────────────────────────────
 # Şablon yerleşimi (sablon.xlsx)
@@ -857,6 +857,16 @@ def _donem_yaz(wb, metin):
         h.value = "\n".join(satirlar) if degisti else metin
 
 
+def _imza_satiri(sh, varsayilan):
+    """Şablondaki 'Gözetmen' başlığının bir alt satırı (şablon değişse de doğru yeri bulur)."""
+    for r in range(ILK_SATIR + 1, sh.max_row + 1):
+        for c in range(1, 9):
+            v = sh.cell(r, c).value
+            if isinstance(v, str) and sade(v) == "GOZETMEN":
+                return r + 1
+    return varsayilan
+
+
 def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
     """Dönüş: (xlsx_bytes | None, bilgi)"""
     ayar = ayar_duzelt(ayar)
@@ -881,7 +891,7 @@ def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
 
         sh["B3"], sh["G5"], sh["C4"], sh["G4"] = ders["ders_adi"], ders["saat"], s["salon"], ders["tarih"]
 
-        r_alt = BUYUK_IMZA if buyuk else NORMAL_IMZA
+        r_alt = _imza_satiri(sh, BUYUK_IMZA if buyuk else NORMAL_IMZA)
         goz = s["gozetmenler"]
         # Her gözetmen imza alanında ayrı satıra, alt alta yazılır
         for j, ad in enumerate(goz or [""]):
@@ -890,12 +900,16 @@ def ders_excel(ders, df, sablon_veri, ayar, kriter="No"):
                 sh.merge_cells(f"E{r_g}:H{r_g}")
                 sh[f"E{r_g}"]._style = copy(sh[f"E{r_alt}"]._style)
             sh[f"E{r_g}"] = ad
+            sh[f"E{r_g}"].alignment = Alignment(horizontal="center", vertical="top", shrink_to_fit=True)
 
         hocalar = benzersiz_hocalar(dilim["Sorumlu"])
         t_h = sh[f"A{r_alt}"]
         t_h.value = "\n".join(hocalar)
-        t_h.alignment = Alignment(wrapText=True, vertical="center")
+        t_h.alignment = Alignment(wrapText=True, vertical="top")
         t_h.font = Font(bold=True, size=10 if len(hocalar) < 3 else 8)
+        # Birden çok hoca alt alta yazıldıysa satırı yazı sığacak kadar yükselt
+        if len(hocalar) > 1:
+            sh.row_dimensions[r_alt].height = 14 * len(hocalar)
 
         for i, (_, row) in enumerate(dilim.iterrows()):
             r = ILK_SATIR + i
